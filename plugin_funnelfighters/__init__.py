@@ -12,6 +12,7 @@ friendly "not connected" result until credentials are saved.
 from __future__ import annotations
 
 import logging
+import os
 
 from luna_sdk import (
     CredentialSlot,
@@ -23,7 +24,14 @@ from luna_sdk import (
 )
 
 from .client import FFClient
-from .config import FF_DEFAULT_BASE_URL, FF_VAULT_KEY_API, FF_VAULT_KEY_ORG
+from .config import (
+    FF_DEFAULT_BASE_URL,
+    FF_ENV_BASE_URL,
+    FF_ENV_KEY,
+    FF_ENV_ORG,
+    FF_VAULT_KEY_API,
+    FF_VAULT_KEY_ORG,
+)
 from .knowledge import FOUR_DUCKS_KNOWLEDGE
 from .state import get_client, set_client
 from .tools import build_tools
@@ -34,7 +42,7 @@ log = logging.getLogger("plugin-funnelfighters")
 class FunnelFightersPlugin(LunaPlugin):
     manifest = PluginManifest(
         name="plugin-funnelfighters",
-        version="0.2.1",
+        version="0.3.0",
         description="Marketing intelligence via FunnelFighters + 4 Ducks methodology",
         category="connectors",
         depends_on=["plugin-vault"],
@@ -60,17 +68,22 @@ class FunnelFightersPlugin(LunaPlugin):
         return get_client() is not None
 
     def credential_slots(self) -> list[CredentialSlot]:
+        # env_base_url_var on the api-key slot marks funnelfighters
+        # proxy-provisionable: the gateway sets LUNA_FUNNELFIGHTERS_BASE_URL
+        # (={gateway}/proxy/funnelfighters) + the token, so the real key never
+        # lands on the tenant machine.
         return [
             CredentialSlot(
                 slug="funnelfighters",
                 credential_name=FF_VAULT_KEY_API,
-                env_key_var="LUNA_FUNNELFIGHTERS_API_KEY",
+                env_key_var=FF_ENV_KEY,
+                env_base_url_var=FF_ENV_BASE_URL,
                 owner=self.manifest.name,
             ),
             CredentialSlot(
                 slug="funnelfighters",
                 credential_name=FF_VAULT_KEY_ORG,
-                env_key_var="LUNA_FUNNELFIGHTERS_ORG_ID",
+                env_key_var=FF_ENV_ORG,
                 owner=self.manifest.name,
             ),
         ]
@@ -109,26 +122,42 @@ class FunnelFightersPlugin(LunaPlugin):
         log.info("plugin-funnelfighters loaded (tools=15, connected=%s)", self.active)
 
     async def _connect_from_vault(self, ctx: PluginContext) -> None:
-        """Build the client if both credentials are already in the vault."""
-        vault = ctx.vault
-        if vault is None:
-            log.warning("Vault not available; plugin-funnelfighters inactive")
-            return
-
-        try:
-            api_key = (await vault.get_credential(FF_VAULT_KEY_API)).value
-        except KeyError:
-            api_key = None
-        try:
-            org_id = (await vault.get_credential(FF_VAULT_KEY_ORG)).value
-        except KeyError:
-            org_id = None
+        """Build the client from vault → env credentials (env = gateway token in
+        proxy mode), routing through LUNA_FUNNELFIGHTERS_BASE_URL when set."""
+        api_key = await self._resolve(ctx, FF_VAULT_KEY_API, FF_ENV_KEY, "FUNNELFIGHTERS_API_KEY")
+        org_id = await self._resolve(ctx, FF_VAULT_KEY_ORG, FF_ENV_ORG, "FUNNELFIGHTERS_ORG_ID")
 
         if not api_key or not org_id:
-            log.info("API key or org_id not in vault; not connected")
+            log.info("API key or org_id not configured; not connected")
             return
 
-        set_client(FFClient(base_url=FF_DEFAULT_BASE_URL, api_key=api_key, org_id=org_id))
+        base_url = self._resolve_base_url(ctx)
+        set_client(FFClient(base_url=base_url, api_key=api_key, org_id=org_id))
+        log.info("plugin-funnelfighters connected (gateway=%s)", base_url != FF_DEFAULT_BASE_URL)
+
+    async def _resolve(self, ctx: PluginContext, vault_key: str, env_key: str, native: str) -> str | None:
+        vault = getattr(ctx, "vault", None)
+        if vault is not None:
+            try:
+                cred = await vault.get_credential(vault_key)
+                if (cred.value or "").strip():
+                    return cred.value.strip()
+            except KeyError:
+                pass
+            except Exception as exc:  # noqa: BLE001
+                log.warning("plugin-funnelfighters: vault read failed for %s: %s", vault_key, exc)
+        if getattr(ctx, "get_env", None) is not None:
+            val = (ctx.get_env(env_key) or "").strip()
+            if val:
+                return val
+        return (os.environ.get(native) or "").strip() or None
+
+    def _resolve_base_url(self, ctx: PluginContext) -> str:
+        if getattr(ctx, "get_env", None) is not None:
+            val = (ctx.get_env(FF_ENV_BASE_URL) or "").strip()
+            if val:
+                return val
+        return (os.environ.get("FUNNELFIGHTERS_BASE_URL") or "").strip() or FF_DEFAULT_BASE_URL
 
     async def on_unload(self) -> None:
         client = get_client()
