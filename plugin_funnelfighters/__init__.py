@@ -42,9 +42,10 @@ log = logging.getLogger("plugin-funnelfighters")
 class FunnelFightersPlugin(LunaPlugin):
     manifest = PluginManifest(
         name="plugin-funnelfighters",
+        shown_name="FunnelFighters",
         icon="filter",
         image="assets/icon.png",
-        version="0.3.1",
+        version="0.3.2",
         description="Marketing intelligence via FunnelFighters + 4 Ducks methodology",
         category="connectors",
         depends_on=["plugin-vault"],

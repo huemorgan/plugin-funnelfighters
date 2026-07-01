@@ -1,5 +1,6 @@
 name = "plugin-funnelfighters"
-version = "0.3.1"
+shown_name = "FunnelFighters"
+version = "0.3.2"
 description = "Marketing intelligence via FunnelFighters + 4 Ducks methodology"
 entry = "plugin_funnelfighters"
 sdk_version = "0"
