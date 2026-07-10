@@ -3,9 +3,9 @@
 0.4.0 (001-multi-workspace): every data tool takes an optional ``workspace``
 (name or id). With one connection it can be omitted; with several, omitting it
 returns an error listing the connected names so the agent self-corrects.
-``ff_workspaces`` lists connections, ``ff_connect`` adds one (verifying the
-pair and copying the workspace name from FunnelFighters), ``ff_disconnect``
-removes one.
+``ff_workspaces`` lists connections, ``ff_connect`` adds one from just an API
+key (the org is discovered from the key; the workspace name is copied from
+FunnelFighters), ``ff_disconnect`` removes one.
 """
 
 from __future__ import annotations
@@ -22,7 +22,7 @@ from .connections import (
     make_connection,
     refresh_placeholder_names,
     save_connections,
-    verify_and_name,
+    verify_and_discover,
 )
 
 MAX_RESPONSE_CHARS = 4000
@@ -305,13 +305,13 @@ def build_management_tools(ctx) -> list[tuple[ToolDef, Any]]:
         await refresh_placeholder_names(conns, state.get_base_url(), _vault())
         return {"workspaces": [c.public() for c in conns], "count": len(conns)}
 
-    async def ff_connect(api_key: str, org_id: str) -> dict:
+    async def ff_connect(api_key: str, org_id: str | None = None) -> dict:
         api_key = (api_key or "").strip()
         org_id = (org_id or "").strip()
-        if not api_key or not org_id:
-            return {"error": "invalid_args", "detail": "Both api_key and org_id are required."}
+        if not api_key:
+            return {"error": "invalid_args", "detail": "api_key is required."}
         try:
-            name = await verify_and_name(api_key, org_id, state.get_base_url())
+            org_id, name = await verify_and_discover(api_key, state.get_base_url(), org_id)
         except ValueError as e:
             return {"error": "verify_failed", "detail": str(e)}
         conn = make_connection(api_key, org_id, name=name)
@@ -363,11 +363,11 @@ def build_management_tools(ctx) -> list[tuple[ToolDef, Any]]:
         ), ff_workspaces),
         (ToolDef(
             name="ff_connect",
-            description="Connect a FunnelFighters workspace from an API key + organization ID. Verifies the pair and names the connection after the FunnelFighters workspace.",
+            description="Connect a FunnelFighters workspace from an API key. The organization is discovered from the key automatically; the connection is named after the FunnelFighters workspace.",
             parameters={"type": "object", "properties": {
                 "api_key": {"type": "string", "description": "FunnelFighters API key."},
-                "org_id": {"type": "string", "description": "FunnelFighters organization ID."},
-            }, "required": ["api_key", "org_id"]},
+                "org_id": {"type": "string", "description": "Optional organization ID — discovered automatically from the key when omitted."},
+            }, "required": ["api_key"]},
             policy="prompt_always",
             risk_level="medium",
             sensitive_args=["api_key"],

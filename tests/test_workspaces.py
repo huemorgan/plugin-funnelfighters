@@ -17,11 +17,13 @@ from plugin_funnelfighters.config import (
 from plugin_funnelfighters.connections import (
     Connection,
     connection_id,
+    discover_workspace,
     fetch_workspace_name,
     load_connections,
     make_connection,
     placeholder_name,
     save_connections,
+    verify_and_discover,
 )
 
 
@@ -199,7 +201,27 @@ async def test_env_pair_registers_as_env_connection(monkeypatch):
     assert state.get_base_url() == "https://gw.example/proxy/funnelfighters"
 
 
-# --- name discovery -------------------------------------------------------------
+# --- org/name discovery ----------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_discover_from_settings():
+    client = FakeClient({"/api/settings": {"id": "org-42", "name": "Acme Inc", "slug": "acme"}})
+    assert await discover_workspace(client) == ("org-42", "Acme Inc")
+
+
+@pytest.mark.asyncio
+async def test_discover_tolerates_missing_route():
+    assert await discover_workspace(FakeClient({})) == ("", "")
+
+
+@pytest.mark.asyncio
+async def test_name_prefers_settings_org_row():
+    client = FakeClient({
+        "/api/settings": {"id": "org1", "name": "Real Org"},
+        "/api/home/summary": {"organization": {"name": "Stale"}},
+    })
+    assert await fetch_workspace_name(client, "org1") == "Real Org"
+
 
 @pytest.mark.asyncio
 async def test_name_from_home_summary_nested():
@@ -208,19 +230,15 @@ async def test_name_from_home_summary_nested():
 
 
 @pytest.mark.asyncio
-async def test_name_ignores_toplevel_name_in_summary_falls_to_org_record():
-    client = FakeClient({
-        "/api/home/summary": {"name": "Some Dashboard"},
-        "/api/organizations/org1": {"id": "org1", "name": "Real Org"},
-    })
-    assert await fetch_workspace_name(client, "org1") == "Real Org"
+async def test_name_ignores_toplevel_name_in_dashboard_summary():
+    client = FakeClient({"/api/home/summary": {"name": "Some Dashboard"}})
+    assert await fetch_workspace_name(client, "org1") == placeholder_name("org1")
 
 
 @pytest.mark.asyncio
 async def test_name_from_org_list():
     client = FakeClient({
         "/api/home/summary": {},
-        "/api/organizations/org2": RuntimeError("404"),
         "/api/organizations": {"organizations": [
             {"id": "org1", "name": "Wrong"},
             {"id": "org2", "name": "Right"},
@@ -252,12 +270,13 @@ def _mgmt_handlers(vault):
 async def test_ff_connect_and_workspaces_and_disconnect(monkeypatch):
     from plugin_funnelfighters import tools as tools_mod
 
-    async def fake_verify(api_key, org_id, base_url):
+    async def fake_verify(api_key, base_url, org_id=""):
         if api_key == "bad":
             raise ValueError("Could not connect with those credentials: 401")
-        return f"WS-{org_id}"
+        org_id = org_id or f"org-of-{api_key}"
+        return org_id, f"WS-{org_id}"
 
-    monkeypatch.setattr(tools_mod, "verify_and_name", fake_verify)
+    monkeypatch.setattr(tools_mod, "verify_and_discover", fake_verify)
     vault = FakeVault()
     h = _mgmt_handlers(vault)
 
@@ -319,3 +338,122 @@ def test_every_data_tool_declares_workspace_param():
 
     for td, _ in build_tools():
         assert "workspace" in td.parameters["properties"], td.name
+
+
+# --- 002: org id optional — discovered from the key --------------------------------
+
+def test_client_omits_org_header_when_unknown():
+    from plugin_funnelfighters.client import FFClient
+
+    with_org = FFClient("http://x", "k", "org1")
+    without = FFClient("http://x", "k")
+    assert with_org._http.headers.get("x-organization-id") == "org1"
+    assert "x-organization-id" not in without._http.headers
+
+
+@pytest.mark.asyncio
+async def test_verify_and_discover_key_only(monkeypatch):
+    from plugin_funnelfighters import connections as conn_mod
+
+    made = []
+
+    def fake_ffclient(*, base_url, api_key, org_id=""):
+        made.append(org_id)
+        return FakeClient({"/api/settings": {"id": "org-77", "name": "Solo Org"}})
+
+    monkeypatch.setattr(conn_mod, "FFClient", fake_ffclient)
+    org, name = await verify_and_discover("ff_key", "http://x")
+    assert (org, name) == ("org-77", "Solo Org")
+    assert made == [""]  # no org header sent during discovery
+
+
+@pytest.mark.asyncio
+async def test_verify_and_discover_supplied_org_wins(monkeypatch):
+    from plugin_funnelfighters import connections as conn_mod
+
+    def fake_ffclient(*, base_url, api_key, org_id=""):
+        return FakeClient({"/api/settings": {"id": "org-77", "name": "Solo Org"}})
+
+    monkeypatch.setattr(conn_mod, "FFClient", fake_ffclient)
+    org, name = await verify_and_discover("ff_key", "http://x", "org-supplied")
+    assert org == "org-supplied" and name == "Solo Org"
+
+
+@pytest.mark.asyncio
+async def test_verify_and_discover_falls_back_to_summary(monkeypatch):
+    from plugin_funnelfighters import connections as conn_mod
+
+    def fake_ffclient(*, base_url, api_key, org_id=""):
+        # No /api/settings (older server); summary verifies + names.
+        return FakeClient({"/api/home/summary": {"organization": {"name": "Old Server Org"}}})
+
+    monkeypatch.setattr(conn_mod, "FFClient", fake_ffclient)
+    org, name = await verify_and_discover("ff_key", "http://x")
+    assert org == "" and name == "Old Server Org"
+
+
+@pytest.mark.asyncio
+async def test_verify_and_discover_bad_key_raises(monkeypatch):
+    from plugin_funnelfighters import connections as conn_mod
+
+    def fake_ffclient(*, base_url, api_key, org_id=""):
+        return FakeClient({})  # every path raises
+
+    monkeypatch.setattr(conn_mod, "FFClient", fake_ffclient)
+    with pytest.raises(ValueError, match="Could not connect"):
+        await verify_and_discover("bad", "http://x")
+
+
+@pytest.mark.asyncio
+async def test_ff_connect_key_only(monkeypatch):
+    from plugin_funnelfighters import tools as tools_mod
+
+    async def fake_verify(api_key, base_url, org_id=""):
+        return "org-disc", "Discovered Org"
+
+    monkeypatch.setattr(tools_mod, "verify_and_discover", fake_verify)
+    h = _mgmt_handlers(FakeVault())
+    r = await h["ff_connect"](api_key="ff_key")
+    assert r["connected"]
+    assert r["workspace"]["org_id"] == "org-disc"
+    assert r["workspace"]["name"] == "Discovered Org"
+
+
+def test_orgless_connection_placeholder_and_persistence():
+    c = make_connection("ff_key")
+    assert c.org_id == ""
+    assert c.name == placeholder_name("", c.id)
+    assert c.id == connection_id("ff_key", "")
+
+
+@pytest.mark.asyncio
+async def test_orgless_connection_roundtrips():
+    vault = FakeVault()
+    state.add_connection(make_connection("ff_key", name="Solo"))
+    await save_connections(vault, state.all_connections())
+    loaded = await load_connections(vault)
+    assert len(loaded) == 1
+    assert loaded[0].org_id == "" and loaded[0].name == "Solo"
+
+
+@pytest.mark.asyncio
+async def test_env_key_without_org_registers(monkeypatch):
+    from plugin_funnelfighters import FunnelFightersPlugin
+    import plugin_funnelfighters as pkg
+
+    class Ctx:
+        vault = FakeVault()
+
+        @staticmethod
+        def get_env(k):
+            return {"LUNA_FUNNELFIGHTERS_API_KEY": "gw-token"}.get(k)
+
+    async def fake_name(client, org_id):
+        return "Hosted Org"
+
+    monkeypatch.setattr(pkg, "fetch_workspace_name", fake_name)
+
+    await FunnelFightersPlugin()._load_connections(Ctx())
+    conns = state.all_connections()
+    assert len(conns) == 1
+    assert conns[0].source == "env" and conns[0].org_id == ""

@@ -24,7 +24,7 @@ from .connections import (
     make_connection,
     refresh_placeholder_names,
     save_connections,
-    verify_and_name,
+    verify_and_discover,
 )
 
 log = logging.getLogger("plugin-funnelfighters.routes")
@@ -34,7 +34,7 @@ _SETTINGS_DIR = Path(__file__).parent / "interface" / "webui" / "settings"
 
 class _ConnectReq(BaseModel):
     api_key: str
-    org_id: str
+    org_id: str | None = None  # optional since 0.5.0 — discovered from the key
 
 
 class _DisconnectReq(BaseModel):
@@ -61,13 +61,13 @@ def register_routes(app, ctx):
     @router.post("/connect")
     async def connect(body: _ConnectReq, user=Depends(get_current_user)):
         api_key = body.api_key.strip()
-        org_id = body.org_id.strip()
-        if not api_key or not org_id:
-            raise HTTPException(400, "Both API key and org ID are required")
+        org_id = (body.org_id or "").strip()
+        if not api_key:
+            raise HTTPException(400, "API key is required")
 
         vault = _vault()
         try:
-            name = await verify_and_name(api_key, org_id, state.get_base_url())
+            org_id, name = await verify_and_discover(api_key, state.get_base_url(), org_id)
         except ValueError as e:
             raise HTTPException(400, str(e)) from e
 

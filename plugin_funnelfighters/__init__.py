@@ -7,11 +7,15 @@ Plugins list toggled off. Turning it on exposes its tools/skill to the agent
 and surfaces a "FunnelFighters" tab in Settings.
 
 0.4.0 (001-multi-workspace): supports N workspace connections. The owner adds
-key + org pairs in Settings; the agent adds them via ``ff_connect``. Each
-connection is named after the FunnelFighters workspace (fetched right after a
-successful verify). Data tools take an optional ``workspace`` arg; with a
-single connection it can be omitted. Tools stay registered before any
-connection and return a friendly "not connected" result.
+keys in Settings; the agent adds them via ``ff_connect``. Each connection is
+named after the FunnelFighters workspace (fetched right after a successful
+verify). Data tools take an optional ``workspace`` arg; with a single
+connection it can be omitted. Tools stay registered before any connection and
+return a friendly "not connected" result.
+
+0.5.0 (002-org-id-optional): connecting needs only the API key — the org id is
+discovered from the key (``GET /api/settings``; a FunnelFighters key is bound
+to exactly one organization server-side). Supplying an org id still works.
 """
 
 from __future__ import annotations
@@ -61,7 +65,7 @@ class FunnelFightersPlugin(LunaPlugin):
         shown_name="FunnelFighters",
         icon="filter",
         image="assets/icon.png",
-        version="0.4.0",
+        version="0.5.0",
         description="Marketing intelligence via FunnelFighters + 4 Ducks methodology",
         category="connectors",
         depends_on=["plugin-vault"],
@@ -149,8 +153,8 @@ class FunnelFightersPlugin(LunaPlugin):
         if not conns and vault is not None:
             api_key = await self._vault_value(vault, FF_VAULT_KEY_API)
             org_id = await self._vault_value(vault, FF_VAULT_KEY_ORG)
-            if api_key and org_id:
-                conn = make_connection(api_key, org_id)
+            if api_key:
+                conn = make_connection(api_key, org_id or "")
                 conn.name = await self._boot_name(conn)
                 conns = [conn]
                 try:
@@ -161,11 +165,12 @@ class FunnelFightersPlugin(LunaPlugin):
 
         reset(conns)
 
-        # Gateway/env-provisioned pair joins as a non-removable extra connection.
+        # Gateway/env-provisioned key joins as a non-removable extra connection.
+        # The org id is optional — the key carries the org server-side.
         env_key = self._env(ctx, FF_ENV_KEY, "FUNNELFIGHTERS_API_KEY")
         env_org = self._env(ctx, FF_ENV_ORG, "FUNNELFIGHTERS_ORG_ID")
-        if env_key and env_org:
-            conn = make_connection(env_key, env_org, source="env")
+        if env_key:
+            conn = make_connection(env_key, env_org or "", source="env")
             conn.name = await self._boot_name(conn)
             add_connection(conn)
             log.info("registered env-provisioned funnelfighters workspace '%s'", conn.name)

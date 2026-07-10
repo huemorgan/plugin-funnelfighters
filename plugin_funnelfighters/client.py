@@ -6,13 +6,15 @@ import httpx
 
 
 class FFClient:
-    def __init__(self, base_url: str, api_key: str, org_id: str):
+    def __init__(self, base_url: str, api_key: str, org_id: str = ""):
+        # Under API-key auth the server derives the org from the key itself;
+        # the x-organization-id header is optional and only sent when known.
+        headers = {"Authorization": f"Bearer {api_key}"}
+        if org_id:
+            headers["x-organization-id"] = org_id
         self._http = httpx.AsyncClient(
             base_url=base_url,
-            headers={
-                "Authorization": f"Bearer {api_key}",
-                "x-organization-id": org_id,
-            },
+            headers=headers,
             timeout=30.0,
         )
 

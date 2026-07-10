@@ -1,6 +1,6 @@
 name = "plugin-funnelfighters"
 shown_name = "FunnelFighters"
-version = "0.4.0"
+version = "0.5.0"
 description = "Marketing intelligence via FunnelFighters + 4 Ducks methodology"
 entry = "plugin_funnelfighters"
 sdk_version = "0"
@@ -13,13 +13,14 @@ readme = """
 
 Marketing intelligence for Luna, powered by the FunnelFighters API and the
 **4 Ducks** funnel-analysis methodology. Ships **installed but OFF** — enable it
-in Settings → Plugins, then add API key + organization ID pairs in the
-FunnelFighters tab (served as a themed iframe from the managed dir).
+in Settings → Plugins, then paste your API key in the FunnelFighters tab
+(served as a themed iframe from the managed dir). The organization is
+discovered from the key automatically.
 
-Supports **multiple workspaces**: connect several key + org pairs (in Settings
-or via the `ff_connect` agent tool); each connection is named after its
-FunnelFighters workspace, and the data tools take an optional `workspace`
-argument (omit it when only one is connected).
+Supports **multiple workspaces**: connect several keys (in Settings or via the
+`ff_connect` agent tool); each connection is named after its FunnelFighters
+workspace, and the data tools take an optional `workspace` argument (omit it
+when only one is connected).
 
 15 read-only data tools (campaigns, ads, funnels, cohorts, ROI, wasted
 spend, …), 3 workspace-management tools, and the `four-ducks` skill the agent
@@ -133,7 +134,7 @@ risk_level = "low"
 
 [[tools]]
 name = "ff_connect"
-description = "Connect a FunnelFighters workspace from an API key + org ID."
+description = "Connect a FunnelFighters workspace from an API key (org auto-discovered)."
 policy = "prompt_always"
 risk_level = "medium"
 

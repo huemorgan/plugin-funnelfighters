@@ -3,28 +3,30 @@
 Marketing intelligence for [Luna](https://github.com/huemorgan/luna), powered by
 the **FunnelFighters** API and the **4 Ducks** funnel-analysis methodology.
 
-Ships **installed but OFF** — enable it in *Settings → Plugins*, then add your
-API key + organization ID pairs in the *FunnelFighters* tab (a themed iframe
-served from the plugin's managed dir).
+Ships **installed but OFF** — enable it in *Settings → Plugins*, then paste
+your API key in the *FunnelFighters* tab (a themed iframe served from the
+plugin's managed dir). The organization is discovered from the key — a
+FunnelFighters key is bound to exactly one organization server-side.
 
 ## What you get
 
-- **Multiple workspaces** — connect several API key + org ID pairs; each
-  connection is named after its FunnelFighters workspace (fetched right after a
-  successful connect). The Settings tab lists all connections and lets you
-  remove them; the agent can add/remove them too.
+- **Multiple workspaces** — connect several API keys; each connection is named
+  after its FunnelFighters workspace (fetched right after a successful
+  connect). The Settings tab lists all connections and lets you remove them;
+  the agent can add/remove them too.
 - **15 read-only data tools** — campaigns, ads, keywords, landing pages, funnels,
   visitors, cohorts, ROI, wasted spend, portfolio/home summaries, and the 4 Ducks
   analyze/reports endpoints. Each takes an optional `workspace` (name or id) —
   omit it when only one workspace is connected.
-- **3 management tools** — `ff_workspaces` (list), `ff_connect` (add a key + org
-  pair; approval-gated), `ff_disconnect` (remove; approval-gated).
+- **3 management tools** — `ff_workspaces` (list), `ff_connect` (add a key;
+  org auto-discovered; approval-gated), `ff_disconnect` (remove; approval-gated).
 - **`four-ducks` skill** — the agent loads it on demand before analyzing ads,
   funnels, or campaign performance.
 
 ## How it connects
 
-API-key connector. Each pair is verified against `/api/home/summary`, the
+API-key connector. Each key is verified against `/api/settings` (which also
+returns the key's organization id and name — no org ID input needed), the
 workspace name is copied from FunnelFighters, and all connections persist as one
 JSON vault credential (`funnelfighters_workspaces`). A pre-0.4 single connection
 migrates into the list automatically on load; a gateway/env-provisioned pair

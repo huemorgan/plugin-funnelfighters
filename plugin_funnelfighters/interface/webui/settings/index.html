@@ -86,11 +86,11 @@
 
   <div id="add" class="card hidden">
     <h2 id="add-title">Add a workspace</h2>
-    <p class="lead">Enter FunnelFighters credentials. Luna verifies them, stores them securely in the vault, and names the connection after your workspace.</p>
+    <p class="lead">Paste a FunnelFighters API key. Luna verifies it, finds the organization it belongs to, stores it securely in the vault, and names the connection after your workspace.</p>
     <label for="api-key">API key</label>
     <input id="api-key" type="password" placeholder="ff_..." autocomplete="off" data-testid="ff-api-key" />
-    <label for="org-id">Organization ID</label>
-    <input id="org-id" type="text" placeholder="org_..." autocomplete="off" data-testid="ff-org-id" />
+    <label for="org-id">Organization ID <span class="muted">(optional — detected from the key)</span></label>
+    <input id="org-id" type="text" placeholder="auto-detected" autocomplete="off" data-testid="ff-org-id" />
     <button id="connect-btn" class="primary" data-testid="ff-connect-btn" data-label="Connect workspace">Connect workspace</button>
   </div>
 
@@ -125,7 +125,7 @@
           '<span class="dot on"></span>' +
           '<div class="conn-main">' +
             '<div class="conn-name">' + esc(w.name) + (provisioned ? '<span class="tag">provisioned</span>' : '') + '</div>' +
-            '<div class="conn-meta">org ' + esc(w.org_id) + ' · id ' + esc(w.id) + (w.connected_at ? ' · since ' + esc(w.connected_at.slice(0, 10)) : '') + '</div>' +
+            '<div class="conn-meta">' + (w.org_id ? 'org ' + esc(w.org_id) + ' · ' : '') + 'id ' + esc(w.id) + (w.connected_at ? ' · since ' + esc(w.connected_at.slice(0, 10)) : '') + '</div>' +
           '</div>' +
           (provisioned ? '' : '<button class="danger" data-testid="ff-remove-btn" data-label="Remove" data-id="' + esc(w.id) + '">Remove</button>');
         list.appendChild(row);
@@ -156,10 +156,10 @@
       const btn = el('connect-btn');
       const api_key = el('api-key').value.trim();
       const org_id = el('org-id').value.trim();
-      if (!api_key || !org_id) { showError('Both API key and organization ID are required.'); return; }
+      if (!api_key) { showError('API key is required.'); return; }
       busy(btn, true, 'Connecting…'); showError(null);
       try {
-        await fetchJSON(BASE + '/connect', { method: 'POST', body: JSON.stringify({ api_key, org_id }) });
+        await fetchJSON(BASE + '/connect', { method: 'POST', body: JSON.stringify(org_id ? { api_key, org_id } : { api_key }) });
         el('api-key').value = ''; el('org-id').value = '';
         await refresh();
       } catch (e) { showError(e.message); }

@@ -1,10 +1,15 @@
-"""Multi-workspace connections — model, vault persistence, name discovery.
+"""Multi-workspace connections — model, vault persistence, org/name discovery.
 
-001-multi-workspace: a connection is an (api_key, org_id) pair plus the
-workspace name fetched from FunnelFighters right after a successful verify.
-All vault-backed connections persist as ONE JSON credential
+001-multi-workspace: a connection is an api_key (plus the org id it belongs
+to) and the workspace name fetched from FunnelFighters right after a
+successful verify. All vault-backed connections persist as ONE JSON credential
 (``funnelfighters_workspaces``); the gateway/env-provisioned pair surfaces as
 an extra non-removable connection with ``source="env"``.
+
+002-org-id-optional: a FunnelFighters API key is bound to exactly one
+organization server-side, so the org id is discovered from the key —
+``GET /api/settings`` (auth: key, no org header) returns the key's org row
+(id, name). Supplying org_id is still accepted for back-compat.
 """
 
 from __future__ import annotations
@@ -21,6 +26,7 @@ from .config import FF_VAULT_KEY_WORKSPACES
 log = logging.getLogger("plugin-funnelfighters.connections")
 
 VERIFY_PATH = "/api/home/summary"
+SETTINGS_PATH = "/api/settings"  # org row of the key's org: id, name, slug
 
 
 def connection_id(api_key: str, org_id: str) -> str:
@@ -28,8 +34,8 @@ def connection_id(api_key: str, org_id: str) -> str:
     return hashlib.sha256(f"{api_key}:{org_id}".encode()).hexdigest()[:8]
 
 
-def placeholder_name(org_id: str) -> str:
-    return f"org {org_id[:8]}"
+def placeholder_name(org_id: str, conn_id: str = "") -> str:
+    return f"org {org_id[:8]}" if org_id else f"workspace {conn_id or '?'}"
 
 
 @dataclass
@@ -58,10 +64,11 @@ class Connection:
         }
 
 
-def make_connection(api_key: str, org_id: str, name: str = "", source: str = "vault") -> Connection:
+def make_connection(api_key: str, org_id: str = "", name: str = "", source: str = "vault") -> Connection:
+    cid = connection_id(api_key, org_id)
     return Connection(
-        id=connection_id(api_key, org_id),
-        name=name or placeholder_name(org_id),
+        id=cid,
+        name=name or placeholder_name(org_id, cid),
         api_key=api_key,
         org_id=org_id,
         connected_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
@@ -116,22 +123,30 @@ def _match_in_list(data: object, org_id: str) -> str | None:
     return None
 
 
-async def fetch_workspace_name(client: FFClient, org_id: str) -> str:
-    """Best-effort name lookup; falls back to a placeholder, never raises.
+async def discover_workspace(client: FFClient) -> tuple[str, str]:
+    """Read the key's own org row from ``/api/settings`` → (org_id, name).
 
-    Verified against the live API (probe 2026-07-10): ``/api/organizations``
-    and ``/api/organizations/:id`` exist (401 unauthenticated); whether they
-    accept bearer-key auth is unknown, hence the tolerant chain.
+    Under key auth the server scopes this to the key's organization with no
+    header needed (verified against server source, 2026-07-10). Returns
+    ("", "") when the route is unavailable; raises nothing.
     """
     try:
-        name = _name_nested(await client.get(VERIFY_PATH))
-        if name:
-            return name
+        data = await client.get(SETTINGS_PATH)
     except Exception:  # noqa: BLE001
-        pass
+        return "", ""
+    if not isinstance(data, dict):
+        return "", ""
+    org_id = str(data.get("id") or "").strip()
+    return org_id, (_name_from_record(data) or "")
+
+
+async def fetch_workspace_name(client: FFClient, org_id: str) -> str:
+    """Best-effort name lookup; falls back to a placeholder, never raises."""
+    _, name = await discover_workspace(client)
+    if name:
+        return name
     try:
-        data = await client.get(f"/api/organizations/{org_id}")
-        name = _name_from_record(data) or _name_nested(data)
+        name = _name_nested(await client.get(VERIFY_PATH))
         if name:
             return name
     except Exception:  # noqa: BLE001
@@ -179,14 +194,16 @@ async def load_connections(vault) -> list[Connection]:
         return []
     out: list[Connection] = []
     for e in entries:
-        if not isinstance(e, dict) or not e.get("api_key") or not e.get("org_id"):
+        if not isinstance(e, dict) or not e.get("api_key"):
             continue
+        org_id = e.get("org_id") or ""
+        cid = e.get("id") or connection_id(e["api_key"], org_id)
         out.append(
             Connection(
-                id=e.get("id") or connection_id(e["api_key"], e["org_id"]),
-                name=e.get("name") or placeholder_name(e["org_id"]),
+                id=cid,
+                name=e.get("name") or placeholder_name(org_id, cid),
                 api_key=e["api_key"],
-                org_id=e["org_id"],
+                org_id=org_id,
                 connected_at=e.get("connected_at", ""),
                 source="vault",
             )
@@ -210,7 +227,7 @@ async def refresh_placeholder_names(conns: list[Connection], base_url: str, vaul
     """
     changed = False
     for c in conns:
-        if c.name != placeholder_name(c.org_id) or c.id in _refresh_attempted:
+        if c.name != placeholder_name(c.org_id, c.id) or c.id in _refresh_attempted:
             continue
         _refresh_attempted.add(c.id)
         name = await fetch_workspace_name(c.ensure_client(base_url), c.org_id)
@@ -224,18 +241,28 @@ async def refresh_placeholder_names(conns: list[Connection], base_url: str, vaul
             log.warning("could not persist refreshed workspace names: %s", exc)
 
 
-async def verify_and_name(api_key: str, org_id: str, base_url: str) -> str:
-    """Verify the pair against the API and return the workspace name.
+async def verify_and_discover(api_key: str, base_url: str, org_id: str = "") -> tuple[str, str]:
+    """Verify the key against the API and return ``(org_id, name)``.
+
+    The key alone is enough: ``/api/settings`` (key auth, no org header)
+    returns the org row the key is bound to. A supplied ``org_id`` is kept
+    (and sent as a header, which the server checks) for back-compat.
 
     Raises ``ValueError`` (with the upstream detail) when the credentials are
     rejected — callers turn that into an HTTP 400 or a tool error.
     """
     client = FFClient(base_url=base_url, api_key=api_key, org_id=org_id)
     try:
+        discovered, name = await discover_workspace(client)
+        if discovered:
+            org_id = org_id or discovered
+            return org_id, (name or placeholder_name(org_id))
+        # /api/settings unavailable (older server / proxy): fall back to the
+        # 0.4 behavior — verify via the home summary, then best-effort name.
         try:
             await client.get(VERIFY_PATH)
         except Exception as e:  # noqa: BLE001
             raise ValueError(f"Could not connect with those credentials: {e}") from e
-        return await fetch_workspace_name(client, org_id)
+        return org_id, await fetch_workspace_name(client, org_id)
     finally:
         await client.close()
