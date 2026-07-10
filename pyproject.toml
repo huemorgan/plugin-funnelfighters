@@ -1,6 +1,6 @@
 [project]
 name = "plugin-funnelfighters"
-version = "0.3.0"
+version = "0.4.0"
 description = "Marketing intelligence (FunnelFighters + 4 Ducks) for Luna. Built on luna_sdk v0."
 readme = "README.md"
 license = { text = "MIT" }

@@ -4,13 +4,19 @@ Registers read-only tools for querying the FunnelFighters API and a 4 Ducks
 methodology skill the agent can load on demand. A connectors-category plugin
 that ships installed-but-OFF (``default_enabled=False``): it shows in the
 Plugins list toggled off. Turning it on exposes its tools/skill to the agent
-and surfaces a "FunnelFighters" tab in Settings where the user pastes their
-API key + org ID. Tools stay registered before connection and return a
-friendly "not connected" result until credentials are saved.
+and surfaces a "FunnelFighters" tab in Settings.
+
+0.4.0 (001-multi-workspace): supports N workspace connections. The owner adds
+key + org pairs in Settings; the agent adds them via ``ff_connect``. Each
+connection is named after the FunnelFighters workspace (fetched right after a
+successful verify). Data tools take an optional ``workspace`` arg; with a
+single connection it can be omitted. Tools stay registered before any
+connection and return a friendly "not connected" result.
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 
@@ -23,7 +29,6 @@ from luna_sdk import (
     SkillDef,
 )
 
-from .client import FFClient
 from .config import (
     FF_DEFAULT_BASE_URL,
     FF_ENV_BASE_URL,
@@ -32,11 +37,22 @@ from .config import (
     FF_VAULT_KEY_API,
     FF_VAULT_KEY_ORG,
 )
+from .connections import (
+    fetch_workspace_name,
+    load_connections,
+    make_connection,
+    save_connections,
+)
 from .knowledge import FOUR_DUCKS_KNOWLEDGE
-from .state import get_client, set_client
-from .tools import build_tools
+from .state import add_connection, all_connections, close_all, reset, set_base_url
+from .tools import build_management_tools, build_tools
 
 log = logging.getLogger("plugin-funnelfighters")
+
+# Cap on the boot-time workspace-name lookup for migrated/env connections —
+# never let a slow FunnelFighters hold up Luna startup. Placeholder-named
+# connections get re-resolved lazily by /status and ff_workspaces.
+_BOOT_NAME_TIMEOUT = 8.0
 
 
 class FunnelFightersPlugin(LunaPlugin):
@@ -45,7 +61,7 @@ class FunnelFightersPlugin(LunaPlugin):
         shown_name="FunnelFighters",
         icon="filter",
         image="assets/icon.png",
-        version="0.3.2",
+        version="0.4.0",
         description="Marketing intelligence via FunnelFighters + 4 Ducks methodology",
         category="connectors",
         depends_on=["plugin-vault"],
@@ -68,7 +84,7 @@ class FunnelFightersPlugin(LunaPlugin):
 
     @property
     def active(self) -> bool:
-        return get_client() is not None
+        return len(all_connections()) > 0
 
     def credential_slots(self) -> list[CredentialSlot]:
         # env_base_url_var on the api-key slot marks funnelfighters
@@ -91,21 +107,16 @@ class FunnelFightersPlugin(LunaPlugin):
             ),
         ]
 
-    def _get_client(self) -> FFClient:
-        client = get_client()
-        if client is None:
-            raise RuntimeError(
-                "FunnelFighters not connected — add the API key and org ID in Settings."
-            )
-        return client
-
     async def on_load(self, ctx: PluginContext) -> None:
         # Tools + skill always register so the agent can see them the moment the
         # plugin is toggled on; the runtime filter hides them while it's off.
-        # The client stays None until credentials are present (here at boot or
-        # later via the Settings connect flow), and tools report "not connected".
-        set_client(None)
-        for tool_def, handler in build_tools(self._get_client):
+        # The registry stays empty until connections are present (loaded here at
+        # boot or added later via Settings / ff_connect), and data tools report
+        # "not connected".
+        reset([])
+        for tool_def, handler in build_tools():
+            ctx.tool_registry.register(self.manifest.name, tool_def, handler)
+        for tool_def, handler in build_management_tools(ctx):
             ctx.tool_registry.register(self.manifest.name, tool_def, handler)
 
         if ctx.skill_registry is not None:
@@ -121,34 +132,72 @@ class FunnelFightersPlugin(LunaPlugin):
                 ),
             )
 
-        await self._connect_from_vault(ctx)
-        log.info("plugin-funnelfighters loaded (tools=15, connected=%s)", self.active)
+        await self._load_connections(ctx)
+        log.info(
+            "plugin-funnelfighters loaded (tools=18, workspaces=%d)",
+            len(all_connections()),
+        )
 
-    async def _connect_from_vault(self, ctx: PluginContext) -> None:
-        """Build the client from vault → env credentials (env = gateway token in
-        proxy mode), routing through LUNA_FUNNELFIGHTERS_BASE_URL when set."""
-        api_key = await self._resolve(ctx, FF_VAULT_KEY_API, FF_ENV_KEY, "FUNNELFIGHTERS_API_KEY")
-        org_id = await self._resolve(ctx, FF_VAULT_KEY_ORG, FF_ENV_ORG, "FUNNELFIGHTERS_ORG_ID")
+    async def _load_connections(self, ctx: PluginContext) -> None:
+        """Rebuild the registry: persisted list, legacy-pair migration, env pair."""
+        set_base_url(self._resolve_base_url(ctx))
 
-        if not api_key or not org_id:
-            log.info("API key or org_id not configured; not connected")
-            return
-
-        base_url = self._resolve_base_url(ctx)
-        set_client(FFClient(base_url=base_url, api_key=api_key, org_id=org_id))
-        log.info("plugin-funnelfighters connected (gateway=%s)", base_url != FF_DEFAULT_BASE_URL)
-
-    async def _resolve(self, ctx: PluginContext, vault_key: str, env_key: str, native: str) -> str | None:
         vault = getattr(ctx, "vault", None)
-        if vault is not None:
-            try:
-                cred = await vault.get_credential(vault_key)
-                if (cred.value or "").strip():
-                    return cred.value.strip()
-            except KeyError:
-                pass
-            except Exception as exc:  # noqa: BLE001
-                log.warning("plugin-funnelfighters: vault read failed for %s: %s", vault_key, exc)
+        conns = await load_connections(vault) if vault is not None else []
+
+        # Migrate the pre-0.4 single connection (vault pair) into the list.
+        if not conns and vault is not None:
+            api_key = await self._vault_value(vault, FF_VAULT_KEY_API)
+            org_id = await self._vault_value(vault, FF_VAULT_KEY_ORG)
+            if api_key and org_id:
+                conn = make_connection(api_key, org_id)
+                conn.name = await self._boot_name(conn)
+                conns = [conn]
+                try:
+                    await save_connections(vault, conns)
+                    log.info("migrated legacy funnelfighters credentials to workspace list")
+                except Exception as exc:  # noqa: BLE001
+                    log.warning("could not persist migrated workspace list: %s", exc)
+
+        reset(conns)
+
+        # Gateway/env-provisioned pair joins as a non-removable extra connection.
+        env_key = self._env(ctx, FF_ENV_KEY, "FUNNELFIGHTERS_API_KEY")
+        env_org = self._env(ctx, FF_ENV_ORG, "FUNNELFIGHTERS_ORG_ID")
+        if env_key and env_org:
+            conn = make_connection(env_key, env_org, source="env")
+            conn.name = await self._boot_name(conn)
+            add_connection(conn)
+            log.info("registered env-provisioned funnelfighters workspace '%s'", conn.name)
+
+    async def _boot_name(self, conn) -> str:
+        try:
+            return await asyncio.wait_for(
+                fetch_workspace_name(conn.ensure_client(self._current_base_url()), conn.org_id),
+                timeout=_BOOT_NAME_TIMEOUT,
+            )
+        except Exception:  # noqa: BLE001
+            return conn.name
+
+    @staticmethod
+    def _current_base_url() -> str:
+        from .state import get_base_url
+
+        return get_base_url()
+
+    @staticmethod
+    async def _vault_value(vault, key: str) -> str | None:
+        try:
+            cred = await vault.get_credential(key)
+            return (cred.value or "").strip() or None
+        except KeyError:
+            return None
+        except Exception as exc:  # noqa: BLE001
+            log.warning("plugin-funnelfighters: vault read failed for %s: %s", key, exc)
+            return None
+
+    @staticmethod
+    def _env(ctx: PluginContext, env_key: str, native: str) -> str | None:
         if getattr(ctx, "get_env", None) is not None:
             val = (ctx.get_env(env_key) or "").strip()
             if val:
@@ -163,7 +212,4 @@ class FunnelFightersPlugin(LunaPlugin):
         return (os.environ.get("FUNNELFIGHTERS_BASE_URL") or "").strip() or FF_DEFAULT_BASE_URL
 
     async def on_unload(self) -> None:
-        client = get_client()
-        if client is not None:
-            await client.close()
-            set_client(None)
+        await close_all()

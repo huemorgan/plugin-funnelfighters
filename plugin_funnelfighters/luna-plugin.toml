@@ -1,6 +1,6 @@
 name = "plugin-funnelfighters"
 shown_name = "FunnelFighters"
-version = "0.3.2"
+version = "0.4.0"
 description = "Marketing intelligence via FunnelFighters + 4 Ducks methodology"
 entry = "plugin_funnelfighters"
 sdk_version = "0"
@@ -13,19 +13,25 @@ readme = """
 
 Marketing intelligence for Luna, powered by the FunnelFighters API and the
 **4 Ducks** funnel-analysis methodology. Ships **installed but OFF** — enable it
-in Settings → Plugins, then paste your API key + organization ID in the
+in Settings → Plugins, then add API key + organization ID pairs in the
 FunnelFighters tab (served as a themed iframe from the managed dir).
 
-15 read-only tools (campaigns, ads, funnels, cohorts, ROI, wasted spend, …) and
-the `four-ducks` skill the agent loads on demand. Built on `luna_sdk` v0:
-credentials via `ctx.vault`, authed routes via `luna_sdk.get_current_user`, live
-client held in a module singleton — no `import luna.*`.
+Supports **multiple workspaces**: connect several key + org pairs (in Settings
+or via the `ff_connect` agent tool); each connection is named after its
+FunnelFighters workspace, and the data tools take an optional `workspace`
+argument (omit it when only one is connected).
+
+15 read-only data tools (campaigns, ads, funnels, cohorts, ROI, wasted
+spend, …), 3 workspace-management tools, and the `four-ducks` skill the agent
+loads on demand. Built on `luna_sdk` v0: credentials via `ctx.vault`, authed
+routes via `luna_sdk.get_current_user`, live connections held in a
+module-level registry — no `import luna.*`.
 
 Source: https://github.com/huemorgan/plugin-funnelfighters
 """
 
 [requires]
-tools = 15
+tools = 18
 skills = 1
 depends_on = ["plugin-vault"]
 
@@ -118,3 +124,21 @@ name = "ff_duck_reports"
 description = "List saved 4 Ducks reports."
 policy = "auto_approve"
 risk_level = "low"
+
+[[tools]]
+name = "ff_workspaces"
+description = "List connected FunnelFighters workspaces."
+policy = "auto_approve"
+risk_level = "low"
+
+[[tools]]
+name = "ff_connect"
+description = "Connect a FunnelFighters workspace from an API key + org ID."
+policy = "prompt_always"
+risk_level = "medium"
+
+[[tools]]
+name = "ff_disconnect"
+description = "Remove a connected FunnelFighters workspace."
+policy = "prompt_always"
+risk_level = "medium"

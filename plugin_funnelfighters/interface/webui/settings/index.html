@@ -18,16 +18,27 @@
       color: var(--ink-50); padding: 2rem; max-width: 46rem;
     }
     h1 { font-size: 1.05rem; font-weight: 600; margin: 0 0 .25rem; }
+    h2 { font-size: .9rem; font-weight: 600; margin: 0 0 .75rem; color: var(--ink-300); }
     .sub { color: var(--ink-400); font-size: .85rem; margin: 0 0 1.5rem; line-height: 1.45; }
     .card {
       background: rgba(17,19,27,.4); border: 1px solid rgba(255,255,255,.06);
-      border-radius: .75rem; padding: 1.25rem;
+      border-radius: .75rem; padding: 1.25rem; margin-bottom: 1rem;
     }
-    .row { display: flex; align-items: center; gap: .55rem; margin-bottom: .75rem; }
-    .dot { width: .55rem; height: .55rem; border-radius: 50%; }
+    .conn {
+      display: flex; align-items: center; gap: .75rem;
+      padding: .7rem 0; border-bottom: 1px solid rgba(255,255,255,.06);
+    }
+    .conn:last-child { border-bottom: none; }
+    .dot { width: .55rem; height: .55rem; border-radius: 50%; flex: none; }
     .dot.on { background: var(--green); box-shadow: 0 0 8px var(--green); }
-    .meta { color: var(--ink-300); font-size: .85rem; margin-bottom: .35rem; }
-    .meta b { color: var(--ink-50); font-weight: 600; }
+    .conn-main { flex: 1; min-width: 0; }
+    .conn-name { font-weight: 600; font-size: .9rem; }
+    .conn-meta { color: var(--ink-400); font-size: .78rem; margin-top: .15rem; word-break: break-all; }
+    .tag {
+      display: inline-block; font-size: .68rem; padding: .1rem .45rem; border-radius: .5rem;
+      background: rgba(139,123,255,.15); color: var(--luna-400); border: 1px solid rgba(139,123,255,.3);
+      margin-left: .4rem; vertical-align: middle;
+    }
     p.lead { color: var(--ink-300); font-size: .9rem; margin: 0 0 1rem; line-height: 1.45; }
     label { display: block; font-size: .8rem; color: var(--ink-400); margin: 0 0 .35rem; }
     input {
@@ -39,11 +50,11 @@
     button {
       display: inline-flex; align-items: center; gap: .5rem; cursor: pointer;
       border: none; border-radius: .5rem; font-size: .875rem; font-weight: 500;
-      padding: .6rem 1rem; color: #fff; transition: background .15s, opacity .15s; margin-top: .25rem;
+      padding: .6rem 1rem; color: #fff; transition: background .15s, opacity .15s;
     }
-    button.primary { background: var(--luna-600); }
+    button.primary { background: var(--luna-600); margin-top: .25rem; }
     button.primary:hover { background: var(--luna-500); }
-    button.danger { background: rgba(220,38,38,.8); }
+    button.danger { background: rgba(220,38,38,.8); font-size: .78rem; padding: .4rem .7rem; flex: none; }
     button.danger:hover { background: rgb(220,38,38); }
     button:disabled { opacity: .5; cursor: default; }
     .err {
@@ -63,24 +74,24 @@
 </head>
 <body>
   <h1>FunnelFighters</h1>
-  <p class="sub">Connect Luna to your FunnelFighters account for marketing intelligence and the 4&nbsp;Ducks methodology. Paste your API key and organization ID below.</p>
+  <p class="sub">Connect Luna to your FunnelFighters workspaces for marketing intelligence and the 4&nbsp;Ducks methodology. You can connect several workspaces — each is named after its FunnelFighters organization.</p>
 
   <div id="error" class="err hidden"></div>
   <div id="loading" class="card muted"><span class="spinner"></span> <span style="vertical-align:middle">Loading…</span></div>
 
-  <div id="connected" class="card hidden">
-    <div class="row"><span class="dot on"></span><span style="font-weight:500">Connected</span></div>
-    <div id="org" class="meta hidden"></div>
-    <button id="disconnect-btn" class="danger" data-testid="ff-disconnect-btn">Disconnect</button>
+  <div id="connections" class="card hidden">
+    <h2>Connected workspaces</h2>
+    <div id="conn-list"></div>
   </div>
 
-  <div id="disconnected" class="card hidden">
-    <p class="lead">Enter your FunnelFighters credentials. Luna will verify them, store them securely in the vault, and activate the marketing tools.</p>
+  <div id="add" class="card hidden">
+    <h2 id="add-title">Add a workspace</h2>
+    <p class="lead">Enter FunnelFighters credentials. Luna verifies them, stores them securely in the vault, and names the connection after your workspace.</p>
     <label for="api-key">API key</label>
     <input id="api-key" type="password" placeholder="ff_..." autocomplete="off" data-testid="ff-api-key" />
     <label for="org-id">Organization ID</label>
     <input id="org-id" type="text" placeholder="org_..." autocomplete="off" data-testid="ff-org-id" />
-    <button id="connect-btn" class="primary" data-testid="ff-connect-btn" data-label="Connect FunnelFighters">Connect FunnelFighters</button>
+    <button id="connect-btn" class="primary" data-testid="ff-connect-btn" data-label="Connect workspace">Connect workspace</button>
   </div>
 
   <script>
@@ -99,21 +110,46 @@
     }
     const el = (id) => document.getElementById(id);
     function showError(m) { const e = el('error'); if (m) { e.textContent = m; e.classList.remove('hidden'); } else { e.classList.add('hidden'); } }
-    function show(which) { for (const id of ['loading','connected','disconnected']) el(id).classList.toggle('hidden', id !== which); }
     function busy(btn, on, label) { btn.disabled = on; btn.innerHTML = on ? '<span class="spinner"></span>' + label : btn.dataset.label; }
+    function esc(s) { const d = document.createElement('div'); d.textContent = s == null ? '' : String(s); return d.innerHTML; }
+
+    function renderList(workspaces) {
+      const list = el('conn-list');
+      list.innerHTML = '';
+      for (const w of workspaces) {
+        const row = document.createElement('div');
+        row.className = 'conn';
+        row.dataset.testid = 'ff-conn-row';
+        const provisioned = w.source === 'env';
+        row.innerHTML =
+          '<span class="dot on"></span>' +
+          '<div class="conn-main">' +
+            '<div class="conn-name">' + esc(w.name) + (provisioned ? '<span class="tag">provisioned</span>' : '') + '</div>' +
+            '<div class="conn-meta">org ' + esc(w.org_id) + ' · id ' + esc(w.id) + (w.connected_at ? ' · since ' + esc(w.connected_at.slice(0, 10)) : '') + '</div>' +
+          '</div>' +
+          (provisioned ? '' : '<button class="danger" data-testid="ff-remove-btn" data-label="Remove" data-id="' + esc(w.id) + '">Remove</button>');
+        list.appendChild(row);
+      }
+      list.querySelectorAll('button[data-id]').forEach((btn) => {
+        btn.addEventListener('click', () => removeConn(btn));
+      });
+    }
 
     async function refresh() {
       try {
         const s = await fetchJSON(BASE + '/status');
         showError(null);
-        if (s.connected) {
-          show('connected');
-          if (s.org_id) { el('org').innerHTML = 'Organization: <b>' + s.org_id + '</b>'; el('org').classList.remove('hidden'); }
-          else { el('org').classList.add('hidden'); }
-        } else {
-          show('disconnected');
-        }
-      } catch (e) { showError(e.message); show('disconnected'); }
+        el('loading').classList.add('hidden');
+        const ws = s.workspaces || [];
+        el('connections').classList.toggle('hidden', ws.length === 0);
+        if (ws.length) renderList(ws);
+        el('add-title').textContent = ws.length ? 'Add another workspace' : 'Add a workspace';
+        el('add').classList.remove('hidden');
+      } catch (e) {
+        el('loading').classList.add('hidden');
+        el('add').classList.remove('hidden');
+        showError(e.message);
+      }
     }
 
     async function connect() {
@@ -130,16 +166,15 @@
       finally { busy(btn, false, ''); }
     }
 
-    async function disconnect() {
-      const btn = el('disconnect-btn'); btn.dataset.label = 'Disconnect';
-      busy(btn, true, 'Disconnecting…'); showError(null);
-      try { await fetchJSON(BASE + '/disconnect', { method: 'POST' }); await refresh(); }
-      catch (e) { showError(e.message); }
-      finally { busy(btn, false, ''); }
+    async function removeConn(btn) {
+      busy(btn, true, ''); showError(null);
+      try {
+        await fetchJSON(BASE + '/disconnect', { method: 'POST', body: JSON.stringify({ id: btn.dataset.id }) });
+        await refresh();
+      } catch (e) { showError(e.message); busy(btn, false, ''); }
     }
 
     el('connect-btn').addEventListener('click', connect);
-    el('disconnect-btn').addEventListener('click', disconnect);
     refresh();
   </script>
 </body>

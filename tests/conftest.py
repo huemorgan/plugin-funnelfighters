@@ -52,6 +52,9 @@ def _install_luna_sdk_stub() -> None:
     class PluginManifest:
         name: str
         version: str
+        shown_name: str | None = None
+        icon: str | None = None
+        image: str | None = None
         description: str = ""
         category: str = ""
         depends_on: list = field(default_factory=list)
