@@ -65,7 +65,7 @@ class FunnelFightersPlugin(LunaPlugin):
         shown_name="FunnelFighters",
         icon="filter",
         image="assets/icon.png",
-        version="0.5.0",
+        version="0.6.0",
         description="Marketing intelligence via FunnelFighters + 4 Ducks methodology",
         category="connectors",
         depends_on=["plugin-vault"],
@@ -118,7 +118,23 @@ class FunnelFightersPlugin(LunaPlugin):
         # boot or added later via Settings / ff_connect), and data tools report
         # "not connected".
         reset([])
+        # 0.6.0: the 15 data tools ride behind the four-ducks skill — they're
+        # only useful mid-analysis, and 15 schemas in every turn's prompt is
+        # pure flooding. Management tools (ff_workspaces/ff_connect/
+        # ff_disconnect) stay visible so connecting never needs a skill load.
+        # Cores without a skill registry get everything ungated.
+        gate = ctx.skill_registry is not None
+        data_tool_names: list[str] = []
         for tool_def, handler in build_tools():
+            data_tool_names.append(tool_def.name)
+            if gate:
+                try:
+                    ctx.tool_registry.register(
+                        self.manifest.name, tool_def, handler, skill_gated=True
+                    )
+                    continue
+                except TypeError:  # core knows skills but not the kwarg
+                    gate = False
             ctx.tool_registry.register(self.manifest.name, tool_def, handler)
         for tool_def, handler in build_management_tools(ctx):
             ctx.tool_registry.register(self.manifest.name, tool_def, handler)
@@ -129,10 +145,14 @@ class FunnelFightersPlugin(LunaPlugin):
                 SkillDef(
                     name="four-ducks",
                     description=(
-                        "marketing funnel analysis methodology — load before "
-                        "analyzing ads, funnels, or campaign performance"
+                        "marketing funnel analysis methodology + the "
+                        "FunnelFighters data tools (campaigns, ads, funnels, "
+                        "keywords, ROI) — load before analyzing ads, funnels, "
+                        "or campaign performance; the tools unlock on your "
+                        "next turn"
                     ),
                     body=FOUR_DUCKS_KNOWLEDGE,
+                    tools=data_tool_names if gate else [],
                 ),
             )
 
